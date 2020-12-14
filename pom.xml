@@ -10,7 +10,7 @@
 		<logback.version>1.2.1</logback.version>
 		<javax.mail.version>1.5.6</javax.mail.version>
 		<hikaricp.version>2.6.0</hikaricp.version>
-		<hsqldb.version>2.3.4</hsqldb.version>
+		<hsqldb.version>2.5.1</hsqldb.version>
 		<testng.version>6.11</testng.version>
 		<lombok.version>1.16.18</lombok.version>
 	</properties>

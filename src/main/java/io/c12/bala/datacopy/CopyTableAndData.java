@@ -1,5 +1,8 @@
 package io.c12.bala.datacopy;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -37,6 +40,8 @@ public class CopyTableAndData {
     private static final boolean COPY_DATA = false;
     private static final boolean COPY_DOMAIN_TABLES_ONLY = true;
 
+    private static final Logger log = LoggerFactory.getLogger(CopyTableAndData.class);
+
     public static void main(String[] args) throws ClassNotFoundException, SQLException, IOException {
         long startTime = System.currentTimeMillis();
         ResourceBundle resource = ResourceBundle.getBundle("application");
@@ -48,7 +53,7 @@ public class CopyTableAndData {
 
         // -- Step 1: Create table and add PK constraints
         for (String tableName : tableNames) {
-            System.out.println("-- " + tableName);
+            log.info("-- {}", tableName);
             String createTableQuery = createTableQuery(sourceConnection, tableName);
             executeUpdate(destinationConnection, createTableQuery);
             String primaryKeyConstraintQuery = createPkConstraintQuery(sourceConnection, tableName, schemaName);
@@ -57,39 +62,39 @@ public class CopyTableAndData {
 
         // -- Step 2: copy data using insert
         if (COPY_DATA) {
-            System.out.println("-- Copy data");
+            log.info("-- Copy data");
             copyData(sourceConnection, destinationConnection, tableNames);
         }
 
         // -- Step 2.1: copy domain table data using insert
         if (COPY_DOMAIN_TABLES_ONLY) {
-            System.out.println("-- Copy Domain data");
+            log.info("-- Copy Domain data");
             List<String> domainTalbes = getDomainTableNames();
             copyData(sourceConnection, destinationConnection, domainTalbes);
         }
 
-        System.out.println("-- Create FK constraints");
+        log.info("-- Create FK constraints");
         // -- Step 3: Create FK constraints after tables are created.
         for (String tableName : tableNames) {
             List<String> foreignKeyQueries = createFkConstraintQuery(sourceConnection, tableName, schemaName, tableNames);
-            for (String foreginKeyQuery : foreignKeyQueries) {
-                System.out.println(foreginKeyQuery);
-                executeUpdate(destinationConnection, foreginKeyQuery);
+            for (String foreignKeyQuery : foreignKeyQueries) {
+                log.info("Foreign Key query - {}", foreignKeyQuery);
+                executeUpdate(destinationConnection, foreignKeyQuery);
             }
         }
 
-        System.out.println("-- Identity setup");
+        log.info("-- Identity setup");
         // -- Step 4: Add autoIncrement after data moved
         for (String tableName : tableNames) {
             String addIdentiyQuery = createIdentityColumns(sourceConnection, tableName);
-            if (addIdentiyQuery != null && !addIdentiyQuery.isEmpty()) {
-                System.out.println(addIdentiyQuery);
+            if (!addIdentiyQuery.isEmpty()) {
+                log.info(addIdentiyQuery);
                 executeUpdate(destinationConnection, addIdentiyQuery);
 
                 // -- Step 5: Update identity restart value
                 String updateIdentityValueQuery = updateIdentityValue(destinationConnection, tableName);
-                if (updateIdentityValueQuery != null && !updateIdentityValueQuery.isEmpty()) {
-                    System.out.println(updateIdentityValueQuery);
+                if (!updateIdentityValueQuery.isEmpty()) {
+                    log.info(updateIdentityValueQuery);
                     executeUpdate(destinationConnection, updateIdentityValueQuery);
                 }
             }
@@ -97,7 +102,7 @@ public class CopyTableAndData {
 
         closeConnection(sourceConnection);
         closeConnection(destinationConnection);
-        System.out.println("Time taken " + (System.currentTimeMillis() - startTime) + "ms");
+        log.info("Time taken {} ms ", (System.currentTimeMillis() - startTime));
     }
 
     /**
@@ -132,7 +137,7 @@ public class CopyTableAndData {
                 sb.append(rsMeta.isNullable(i) == 0 ? " NOT NULL, " : ", ");
             }
             createQuery = sb.substring(0, sb.toString().length() - 2) + " )";
-            System.out.println(createQuery);
+            log.info(createQuery);
             rs.close();
         }
         return createQuery;
@@ -158,7 +163,7 @@ public class CopyTableAndData {
             sb.append(pkey).append(", ");
         }
         String primaryKeyConstraintQuery = sb.substring(0, sb.toString().length() - 2) + ")";
-        System.out.println(primaryKeyConstraintQuery);
+        log.info(primaryKeyConstraintQuery);
         resultSet.close();
         return primaryKeyConstraintQuery;
     }
@@ -199,70 +204,71 @@ public class CopyTableAndData {
      * @param destConn      Destination DB connection.
      * @param tableNameList list of tables which data need to be copied.
      */
+    // TODO: Simplify this method.
     private static void copyData(Connection srcConn, Connection destConn, List<String> tableNameList) {
         try {
             for (String tableName : tableNameList) {
                 String sourceSelectQuery = "SELECT * FROM " + tableName;
-                PreparedStatement srcPrepStmt = srcConn.prepareStatement(sourceSelectQuery);
+                try (PreparedStatement srcPrepStmt = srcConn.prepareStatement(sourceSelectQuery)) {
 
-                ResultSet srcRs = srcPrepStmt.executeQuery();
-                ResultSetMetaData srcRsMd = srcPrepStmt.getMetaData();
+                    ResultSet srcRs = srcPrepStmt.executeQuery();
+                    ResultSetMetaData srcRsMd = srcPrepStmt.getMetaData();
 
-                destConn.setAutoCommit(false);
-                String destSelectQuery = "SELECT * FROM " + tableName + " WHERE 1=2";
-                PreparedStatement destPrepStmt = destConn.prepareStatement(destSelectQuery);
-                ResultSet destRs = destPrepStmt.executeQuery();
-                ResultSetMetaData destRsMd = destPrepStmt.getMetaData();
+                    destConn.setAutoCommit(false);
+                    String destSelectQuery = "SELECT * FROM " + tableName + " WHERE 1=2";
+                    try (PreparedStatement destPrepStmt = destConn.prepareStatement(destSelectQuery)) {
+                        ResultSet destRs = destPrepStmt.executeQuery();
+                        ResultSetMetaData destRsMd = destPrepStmt.getMetaData();
 
-                if (destRsMd.getColumnCount() != srcRsMd.getColumnCount()) {
-                    throw new IllegalArgumentException(tableName + " - number of coulmns do not match");
-                }
+                        if (destRsMd.getColumnCount() != srcRsMd.getColumnCount()) {
+                            throw new IllegalArgumentException(tableName + " - number of coulmns do not match");
+                        }
 
-                HashMap<String, Integer> destColumnNames = getColumnNames(destRsMd);
+                        HashMap<String, Integer> destColumnNames = getColumnNames(destRsMd);
 
-                List<String> columnNames = new ArrayList<>();
-                List<String> columnParams = new ArrayList<>();
+                        List<String> columnNames = new ArrayList<>();
+                        List<String> columnParams = new ArrayList<>();
 
-                for (int i = 1; i <= srcRsMd.getColumnCount(); i++) {
-                    String srcCoulmnName = srcRsMd.getColumnName(i);
-                    if (destColumnNames.get(srcCoulmnName) == null) {
-                        throw new IllegalArgumentException("could not find " + srcCoulmnName + " in destination table " + tableName);
-                    }
-                    columnNames.add(srcCoulmnName);
-                    columnParams.add("?");
-                }
+                        for (int i = 1; i <= srcRsMd.getColumnCount(); i++) {
+                            String srcCoulmnName = srcRsMd.getColumnName(i);
+                            if (destColumnNames.get(srcCoulmnName) == null) {
+                                throw new IllegalArgumentException("could not find " + srcCoulmnName + " in destination table " + tableName);
+                            }
+                            columnNames.add(srcCoulmnName);
+                            columnParams.add("?");
+                        }
 
-                String columns = columnNames.toString().replace('[', '(').replace(']', ')');
-                String params = columnParams.toString().replace('[', '(').replace(']', ')');
+                        String columns = columnNames.toString().replace('[', '(').replace(']', ')');
+                        String params = columnParams.toString().replace('[', '(').replace(']', ')');
 
-                String destInsertSql = "INSERT INTO " + tableName + " " + columns + " VALUES " + params;
-                System.out.println(destInsertSql);
+                        String destInsertSql = "INSERT INTO " + tableName + " " + columns + " VALUES " + params;
+                        log.info(destInsertSql);
 
-                PreparedStatement destInsertStmt = destConn.prepareStatement(destInsertSql);
+                        PreparedStatement destInsertStmt = destConn.prepareStatement(destInsertSql);
 
-                int count = 0;
-                while (srcRs.next()) {
-                    for (int i = 1; i <= srcRsMd.getColumnCount(); i++) {
-                        destInsertStmt.setObject(i, srcRs.getObject(i));
-                    }
-                    destInsertStmt.addBatch();
-                    try {
-                        if (++count % BATCH_INSERT_SIZE == 0) {
+                        int count = 0;
+                        while (srcRs.next()) {
+                            for (int i = 1; i <= srcRsMd.getColumnCount(); i++) {
+                                destInsertStmt.setObject(i, srcRs.getObject(i));
+                            }
+                            destInsertStmt.addBatch();
+                            try {
+                                if (++count % BATCH_INSERT_SIZE == 0) {
+                                    destInsertStmt.executeBatch();
+                                }
+                            } catch (SQLException e) {
+                                // Assuming the PK is first column
+                                log.error("Skipping row where {} = {} ", srcRsMd.getColumnName(1), srcRs.getObject(1), e);
+                            }
+                        }
+                        if (count % BATCH_INSERT_SIZE != 0) {
                             destInsertStmt.executeBatch();
                         }
-                    } catch (SQLException e) {
-                        // Assuming the PK is first column
-                        System.err.println("Skipping row where " + srcRsMd.getColumnName(1) + " = " + srcRs.getObject(1) + " because of " + e.getMessage());
+                        destInsertStmt.close();
+                        destRs.close();
                     }
+                    srcRs.close();
                 }
-                if (count % BATCH_INSERT_SIZE != 0) {
-                    destInsertStmt.executeBatch();
-                }
-                destInsertStmt.close();
-                destRs.close();
-                destPrepStmt.close();
-                srcRs.close();
-                srcPrepStmt.close();
             }
             destConn.commit();
         } catch (SQLException e1) {
@@ -318,7 +324,7 @@ public class CopyTableAndData {
             for (int i = 1; i <= rsMeta.getColumnCount(); i++) {
                 if (rsMeta.isAutoIncrement(i)) {
                     String getMaxIdentityValQuery = "SELECT MAX(" + rsMeta.getColumnName(i) + ") FROM " + tableName;
-                    System.out.println(getMaxIdentityValQuery);
+                    log.info(getMaxIdentityValQuery);
                     int maxIdentityCount;
                     try (PreparedStatement idenPrepStmt = hyperSqlConn.prepareStatement(getMaxIdentityValQuery)) {
                         ResultSet idenRs = idenPrepStmt.executeQuery();
